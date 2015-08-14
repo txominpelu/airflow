@@ -28,7 +28,7 @@ from airflow import settings, utils
 from airflow.executors import DEFAULT_EXECUTOR, LocalExecutor
 from airflow.configuration import conf
 from airflow.utils import (
-    AirflowException, State, apply_defaults, provide_session)
+    AirflowException, State, TriggerRule, apply_defaults, provide_session)
 
 Base = declarative_base()
 ID_LEN = 250
@@ -645,6 +645,7 @@ class TaskInstance(Base):
         :type flag_upstream_failed: boolean
         """
         TI = TaskInstance
+        TR = TriggerRule
 
         # Using the session if passed as param
         session = main_session or settings.Session()
@@ -670,7 +671,9 @@ class TaskInstance(Base):
                 return False
 
         # Checking that all upstream dependencies have succeeded
-        if task._upstream_list:
+        if not task._upstream_list or t.trigger_rule == TR.DUMMY:
+            return True
+        else:
             upstream_task_ids = [t.task_id for t in task._upstream_list]
             qry = (
                 session
@@ -679,6 +682,10 @@ class TaskInstance(Base):
                         case([(TI.state == State.SUCCESS, 1)], else_=0)),
                     func.sum(
                         case([(TI.state == State.SKIPPED, 1)], else_=0)),
+                    func.sum(
+                        case([(TI.state == State.FAILED, 1)], else_=0)),
+                    func.sum(
+                        case([(TI.state == State.UPSTREAM_FAILED, 1)], else_=0)),
                     func.count(TI.task_id),
                 )
                 .filter(
@@ -690,27 +697,36 @@ class TaskInstance(Base):
                         State.UPSTREAM_FAILED, State.SKIPPED]),
                 )
             )
-            successes, skipped, done = qry[0]
+            successes, skipped, failed, upstream_failed, done = qry.first()
             if flag_upstream_failed:
                 if skipped:
                     self.state = State.SKIPPED
-                    self.start_date = datetime.now()
-                    self.end_date = datetime.now()
-                    session.merge(self)
-
                 elif successes < done >= len(task._upstream_list):
                     self.state = State.UPSTREAM_FAILED
-                    self.start_date = datetime.now()
-                    self.end_date = datetime.now()
-                    session.merge(self)
 
-            if successes < len(task._upstream_list):
-                return False
+                self.start_date = datetime.now()
+                self.end_date = datetime.now()
+                session.merge(self)
+
+            if t.trigger_rule == TR.ONE_SUCCESS and successes > 0:
+                return True
+            elif (t.trigger_rule == TR.ONE_FAILED and
+                  (failed + upstream_failed) > 0):
+                return True
+            elif (t.trigger_rule == TR.ALL_SUCCESS and
+                  successes == len(task._upstream_list)):
+                return True
+            elif (t.trigger_rule == TR.ALL_FAILED and
+                  failed + upstream_failed == len(task._upstream_list)):
+                return True
+            elif (t.trigger_rule == TR.ALL_DONE and
+                  done == len(task._upstream_list)):
+                return True
 
         if not main_session:
             session.commit()
             session.close()
-        return True
+        return False
 
     def __repr__(self):
         return (
@@ -1113,6 +1129,14 @@ class BaseOperator(object):
     :param on_success_callback: much like the ``on_failure_callback`` excepts
         that it is executed when the task succeeds.
     :type on_success_callback: callable
+    :param trigger_rule: defines the rule by which dependencies are applied
+        for the task to get triggered. Options are:
+        ``{ all_success | all_failed | all_done | one_success |
+        one_failed | dummy}``
+        default is ``all_success``. Options can be set as string or
+        using the constants defined in the static class
+        ``airflow.utils.TriggerRule``
+    :type trigger_rule: str
     """
 
     # For derived classes to define which fields will get jinjaified
@@ -1150,6 +1174,7 @@ class BaseOperator(object):
             on_failure_callback=None,
             on_success_callback=None,
             on_retry_callback=None,
+            trigger_rule=TriggerRule.ALL_SUCCESS,
             *args,
             **kwargs):
 
@@ -1162,6 +1187,7 @@ class BaseOperator(object):
         self.email_on_failure = email_on_failure
         self.start_date = start_date
         self.end_date = end_date
+        self.trigger_rule = trigger_rule
         self.depends_on_past = depends_on_past
         self.wait_for_downstream = wait_for_downstream
         self._schedule_interval = schedule_interval
