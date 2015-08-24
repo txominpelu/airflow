@@ -472,5 +472,21 @@ class HttpOpSensorTest(unittest.TestCase):
             sensor.run(
                 start_date=DEFAULT_DATE, end_date=DEFAULT_DATE, force=True)
 
+class HiveKerberosTest(unittest.TestCase):
+
+    def test_no_krb(self):
+        """ Tests that hive runs when there is no kerberos set up"""
+        pass
+
+    def test_krb(self):
+        """ Tests that hive runs when there kerberos set up"""
+        # Check that the principal is passed in the connection chain
+        # Check that the proxy user is passed
+
+    def test_krb(self):
+        """ The hive cmd fails if a param is missing in the krb config"""
+        # The command fails if the param hive_krb_principal in the extra config doesn't exist
+        # and kerberos is activated for hive
+
 if __name__ == '__main__':
     unittest.main()

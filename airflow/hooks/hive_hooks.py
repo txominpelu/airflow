@@ -37,6 +37,7 @@ class HiveCliHook(BaseHook):
             hive_cli_conn_id="hive_cli_default"):
         conn = self.get_connection(hive_cli_conn_id)
         self.hive_cli_params = conn.extra_dejson.get('hive_cli_params', '')
+        self.hive_krb_principal = conn.extra_dejson.get('hive_krb_principal', '')
         self.use_beeline = conn.extra_dejson.get('use_beeline', False)
         self.conn = conn
 
